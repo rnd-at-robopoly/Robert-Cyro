@@ -1,13 +1,13 @@
 # Personal Development Log
 
-**Name:** [First name, Last name]  
-**Project:** [Project name]
+**Name:** [Alissa, Chedid]  
+**Project:** [Robert Cyro]
 
 ---
 
-## YYYY-MM-DD
+## 2026-11-09
 
-[Write freely about your work, ideas, observations, technical decisions, problems encountered, experiments, results, etc.]
+[size calculation of the MG90s’ support]
 
 Feel free to include:
 - Notes and reflections
