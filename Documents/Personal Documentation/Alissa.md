@@ -9,14 +9,7 @@
 
 [size calculation of the MG90s’ support]
 
-Feel free to include:
-- Notes and reflections
-- Calculations and technical details
-- Pictures, diagrams and screenshots
-- Links to useful resources
-- Ideas and possible improvements
-
----
+I want to inclue the schéma of the calculation 
 
 ## YYYY-MM-DD
 
