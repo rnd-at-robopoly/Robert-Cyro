@@ -5,7 +5,6 @@
 
 ---
 
-## YYYY-MM-DD
 ## 2026-11-05
 
 Pris en main l'ESP32 avec PlatformIO sous VS Code (configuré la carte esp32dev et le framework Arduino).
@@ -24,7 +23,7 @@ lien pour le tutoriel:
 https://randomnerdtutorials.com/esp32-servo-motor-web-server-arduino-ide/
 ---
 
-## 20206-11-12
+## 2026-11-12
 
 Adapté le code pour piloter les 4 servomoteurs en même temps via un tableau sur les broches 13, 14, 27, 26 (remplacé la 12 car c'est une broche de boot sur l'ESP32 qui peut empêcher la carte de démarrer si un servo y est branché).
 
@@ -37,5 +36,9 @@ Remplacé les appels jQuery du tuto par fetch() en JavaScript natif pour envoyer
 Passé l'ESP32 en mode Point d'Accès (WiFi.softAP, réseau RobertCyro-ESP32, IP 192.168.4.1) pour pouvoir s'y connecter directement depuis un téléphone ou un PC sans routeur.
 
 Testé depuis un portable - les 4 sliders envoient bien les bonnes valeurs d'angle pour chaque broche dans le Serial Monitor.
+
+Modifié le serveur pour calculer les positions à propos des 4 angles (avec les calculations kinematics de Martin), fait les sliders progressifs
+
+Testé le serveur avec les 4 servos, tout marche bien
 
 ---

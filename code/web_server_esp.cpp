@@ -1,32 +1,119 @@
-
 #include <Arduino.h>
 #include <ESP32Servo.h>
 #include <WiFi.h>
+#include <cmath>
+
+// Arm dimensions from Martin's kinematics (in mm)
+const float L1 = 130.0; // longueur premier bras (mm)
+const float L2 = 120.0; // longueur deuxieme bras (mm)
+
+struct Position {
+  float x, y, z;
+  float yaw, pitch, roll;
+};
+
+// Forward Kinematics calculation from Martin's code
+Position calculateArmPosition(float alpha, float beta, float gamma, float phi) {
+  Position pos;
+  float alphaRad = alpha * DEG_TO_RAD;
+  float betaRad = beta * DEG_TO_RAD;
+  float gammaMinusBetaRad = (gamma - beta) * DEG_TO_RAD;
+
+  pos.x = (L1 * sin(betaRad) + L2 * sin(gammaMinusBetaRad)) * cos(alphaRad);
+  pos.y = (L1 * sin(betaRad) + L2 * sin(gammaMinusBetaRad)) * sin(alphaRad);
+  pos.z = L1 * cos(betaRad) - L2 * cos(gammaMinusBetaRad);
+  pos.yaw = alpha;
+  pos.pitch = gamma - beta - 90.0;
+  pos.roll = phi;
+  return pos;
+}
 
 // 4 servos configuration
+// GPIOs: 13 (Base), 14 (Shoulder), 27 (Elbow), 26 (Wrist)
 const int NUM_SERVOS = 4;
 const int servoPins[NUM_SERVOS] = {13, 14, 27, 26};
 const char *servoNames[NUM_SERVOS] = {
-    "Servo 1 - Base (GPIO 13)", "Servo 2 - Shoulder (GPIO 14)",
-    "Servo 3 - Elbow (GPIO 27)", "Servo 4 - Wrist (GPIO 26)"};
+    "Base / Alpha (GPIO 13)", "Shoulder / Beta (GPIO 14)",
+    "Elbow / Gamma (GPIO 27)", "Wrist / Phi (GPIO 26)"};
 
 Servo servos[NUM_SERVOS];
-int servoPos[NUM_SERVOS] = {90, 90, 90, 90}; // Default center position
+int servoPos[NUM_SERVOS] = {90, 90, 90, 90}; // Default 90 degrees
 
-// ESP32 creates its own Wi-Fi network
+// ESP32 Access Point credentials
 const char *ssid = "RobertCyro-ESP32";
 const char *password = "12345678";
 
-// set web server port number to 80
+// Web server on port 80
 WiFiServer server(80);
 
-// Variable to store the HTTP request
+// Request tracking
 String header;
-
-// timeout handling
 unsigned long currentTime = millis();
 unsigned long previousTime = 0;
 const long timeoutTime = 2000;
+
+const char HTML_HEAD_CSS[] PROGMEM = R"rawliteral(<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 380px; margin: 24px auto; padding: 0 16px; color: #111; }
+    h2 { margin: 0 0 2px 0; font-size: 20px; }
+    .sub { color: #666; font-size: 13px; margin: 0 0 16px 0; }
+    .kin { padding: 12px 0; border-top: 1px solid #e5e5e5; border-bottom: 1px solid #e5e5e5; margin-bottom: 20px; }
+    .row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 14px; }
+    .val { font-weight: 600; }
+    .joint { margin: 16px 0; }
+    .header { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 2px; }
+    input[type=range] { width: 100%; margin: 6px 0; accent-color: #111; }
+  </style>
+</head>
+<body>
+  <h2>Robert Cyro</h2>
+)rawliteral";
+
+const char HTML_JS[] PROGMEM = R"rawliteral(
+  <script>
+    var pending = {};
+    var busy = false;
+
+    function moveServo(id, val) {
+      document.getElementById('v' + id).innerText = val;
+      pending[id] = val;
+      sendNext();
+    }
+
+    function sendNext() {
+      if (busy) return;
+      var keys = Object.keys(pending);
+      if (keys.length === 0) return;
+
+      var id = keys[0];
+      var val = pending[id];
+      delete pending[id];
+
+      busy = true;
+      fetch('/?servo=' + id + '&value=' + val + '&')
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          document.getElementById('pos_x').innerText = d.x.toFixed(2);
+          document.getElementById('pos_y').innerText = d.y.toFixed(2);
+          document.getElementById('pos_z').innerText = d.z.toFixed(2);
+          document.getElementById('pos_yaw').innerText = d.yaw.toFixed(1);
+          document.getElementById('pos_pitch').innerText = d.pitch.toFixed(1);
+          document.getElementById('pos_roll').innerText = d.roll.toFixed(1);
+        })
+        .catch(function() {})
+        .finally(function() {
+          busy = false;
+          if (Object.keys(pending).length > 0) sendNext();
+        });
+    }
+  </script>
+</body>
+</html>
+)rawliteral";
 
 void handleServoRequest(const String &reqHeader) {
   int lineEnd = reqHeader.indexOf('\n');
@@ -51,60 +138,88 @@ void handleServoRequest(const String &reqHeader) {
         angle = constrain(angle, 0, 180);
         servoPos[servoNum - 1] = angle;
         servos[servoNum - 1].write(angle);
-        Serial.printf("%s -> %d deg\n", servoNames[servoNum - 1], angle);
+
+        Position p = calculateArmPosition(servoPos[0], servoPos[1], servoPos[2],
+                                          servoPos[3]);
+        Serial.printf("%s -> %d deg | Arm: X=%.1f mm, Y=%.1f mm, Z=%.1f mm\n",
+                      servoNames[servoNum - 1], angle, p.x, p.y, p.z);
       }
     }
   }
 }
 
-void sendHtmlPage(WiFiClient &client) {
+void sendKinematicsJson(WiFiClient &client) {
+  Position p =
+      calculateArmPosition(servoPos[0], servoPos[1], servoPos[2], servoPos[3]);
+
   client.println("HTTP/1.1 200 OK");
-  client.println("Content-type:text/html");
+  client.println("Content-type: application/json");
+  client.println("Connection: close");
+  client.println();
+  client.printf("{\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"yaw\":%.1f,\"pitch\":%.1f,"
+                "\"roll\":%.1f}\n",
+                p.x, p.y, p.z, p.yaw, p.pitch, p.roll);
+}
+
+// Sends HTML page on initial visit or page refresh
+void sendHtmlPage(WiFiClient &client) {
+  Position p =
+      calculateArmPosition(servoPos[0], servoPos[1], servoPos[2], servoPos[3]);
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-type: text/html");
   client.println("Connection: close");
   client.println();
 
-  client.println("<!DOCTYPE html><html>");
-  client.println("<head><meta name=\"viewport\" content=\"width=device-width, "
-                 "initial-scale=1\">");
-  client.println("<link rel=\"icon\" href=\"data:,\">");
-  client.println("<style>");
-  client.println("body { text-align: center; font-family: 'Trebuchet MS', "
-                 "Arial, sans-serif; margin: 20px auto; max-width: 400px; }");
-  client.println(".card { border: 1px solid #ddd; border-radius: 8px; padding: "
-                 "12px; margin: 12px 0; }");
-  client.println(".slider { width: 100%; }");
-  client.println("</style></head>");
-  client.println("<body><h1>Robert Cyro - 4 Servos</h1>");
+  // static html head and CSS from Flash
+  client.print(HTML_HEAD_CSS);
 
-  // create one slider block per servo
+  // simple kinematics block
+  client.println("<div class=\"kin\">");
+  client.println("  <div class=\"row\">");
+  client.printf(
+      "    <div>X: <span id=\"pos_x\" class=\"val\">%.2f</span> mm</div>\n",
+      p.x);
+  client.printf(
+      "    <div>Y: <span id=\"pos_y\" class=\"val\">%.2f</span> mm</div>\n",
+      p.y);
+  client.printf(
+      "    <div>Z: <span id=\"pos_z\" class=\"val\">%.2f</span> mm</div>\n",
+      p.z);
+  client.println("  </div>");
+  client.println("  <div class=\"row\" style=\"color: #666; font-size: 13px; "
+                 "margin-top: 6px;\">");
+  client.printf("    <div>Yaw: <span id=\"pos_yaw\">%.1f</span>&deg;</div>\n",
+                p.yaw);
+  client.printf(
+      "    <div>Pitch: <span id=\"pos_pitch\">%.1f</span>&deg;</div>\n",
+      p.pitch);
+  client.printf("    <div>Roll: <span id=\"pos_roll\">%.1f</span>&deg;</div>\n",
+                p.roll);
+  client.println("  </div>");
+  client.println("</div>");
+
+  // Sliders for 4 servos
   for (int i = 0; i < NUM_SERVOS; i++) {
     int id = i + 1;
-    client.println("<div class=\"card\">");
-    client.printf("<h3>%s</h3>\n", servoNames[i]);
-    client.printf("<p>Position: <span id=\"servoPos%d\">%d</span>&deg;</p>\n",
-                  id, servoPos[i]);
-    client.printf("<input type=\"range\" min=\"0\" max=\"180\" "
-                  "class=\"slider\" id=\"servoSlider%d\" value=\"%d\" "
-                  "oninput=\"updateLabel(%d, this.value)\" "
-                  "onchange=\"moveServo(%d, this.value)\"/>\n",
-                  id, servoPos[i], id, id);
+    client.println("<div class=\"joint\">");
+    client.printf("  <div class=\"header\"><span>%s</span><span><span "
+                  "id=\"v%d\" class=\"val\">%d</span>&deg;</span></div>\n",
+                  servoNames[i], id, servoPos[i]);
+    client.printf("  <input type=\"range\" min=\"0\" max=\"180\" value=\"%d\" "
+                  "oninput=\"moveServo(%d, this.value)\">\n",
+                  servoPos[i], id);
     client.println("</div>");
   }
 
-  client.println("<script>");
-  client.println("function updateLabel(id, val) { "
-                 "document.getElementById('servoPos' + id).innerHTML = val; }");
-  client.println("function moveServo(id, pos) { fetch('/?servo=' + id + "
-                 "'&value=' + pos + '&'); }");
-  client.println("</script>");
-  client.println("</body></html>");
-  client.println();
+  // JavaScript from Flash
+  client.print(HTML_JS);
 }
 
 void setup() {
   Serial.begin(115200);
 
-  // attach all 4 servos with MG90S pulse widths (500us =0deg, 2400us = 180 deg)
+  // Attach all 4 servos with MG90S pulse widths (500us - 2400us)
   for (int i = 0; i < NUM_SERVOS; i++) {
     ESP32PWM::allocateTimer(i);
     servos[i].setPeriodHertz(50);
@@ -112,7 +227,7 @@ void setup() {
     servos[i].write(servoPos[i]);
   }
 
-  // start wifi
+  // Start Wi-Fi Access Point
   Serial.print("Starting Access Point: ");
   Serial.println(ssid);
   if (!WiFi.softAP(ssid, password)) {
@@ -122,27 +237,24 @@ void setup() {
     }
   }
 
-  // print ip
   Serial.print("AP IP address: ");
   Serial.println(WiFi.softAPIP());
   server.begin();
 }
 
 void loop() {
-  WiFiClient client = server.accept(); // listen for incoming clients
+  WiFiClient client = server.accept();
 
   if (client) {
     currentTime = millis();
     previousTime = currentTime;
-    Serial.println("New Client.");
     String currentLine = "";
 
     while (client.connected() && currentTime - previousTime <= timeoutTime) {
       currentTime = millis();
       if (client.available()) {
         char c = client.read();
-        Serial.write(c);
-        if (header.length() < 2048) {
+        if (header.length() < 1024) {
           header += c;
         }
 
@@ -150,8 +262,10 @@ void loop() {
           if (currentLine.length() == 0) {
             if (header.indexOf("GET /?servo=") >= 0) {
               handleServoRequest(header);
+              sendKinematicsJson(client); // Fast, compact response
+            } else {
+              sendHtmlPage(client); // Initial full page load
             }
-            sendHtmlPage(client);
             break;
           } else {
             currentLine = "";
@@ -164,7 +278,5 @@ void loop() {
 
     header = "";
     client.stop();
-    Serial.println("Client disconnected.");
-    Serial.println("");
   }
 }
